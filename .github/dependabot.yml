@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Scan Go dependencies (go.mod) weekly
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # Scan GitHub Actions (ci.yml) weekly
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

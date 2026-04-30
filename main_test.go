@@ -58,7 +58,7 @@ func TestModelUpdate(t *testing.T) {
 
 	qMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}
 	_, cmd := updatedM.Update(qMsg)
-	
+
 	if cmd == nil {
 		t.Error("Expected tea.Quit command on pressing 'q', got nil")
 	}

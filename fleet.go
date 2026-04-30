@@ -92,7 +92,7 @@ func (f *Fleet) worker() {
 // execute runs the actual Git commands based on the SwarmType.
 func (f *Fleet) execute(job Job) Result {
 	var cmd *exec.Cmd
-	
+
 	switch job.Type {
 	case SwarmStatus:
 		// Check for uncommitted changes

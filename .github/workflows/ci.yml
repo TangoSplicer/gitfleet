@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   validate:
-    name: Alignment & Correct Usage Check
+    name: Alignment, Testing & Usage Check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -29,7 +29,6 @@ jobs:
 
       - name: Usage Alignment (Format Check)
         run: |
-          # Fails if any file is not formatted idiomaticaly
           if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
             echo "Formatting error! Run 'go fmt ./...'"
             exit 1
@@ -37,6 +36,9 @@ jobs:
 
       - name: Logic Hallucination Check (Go Vet)
         run: go vet ./...
+
+      - name: Execute Test Suite
+        run: go test -v ./...
 
   release:
     name: Build & Release (OS-Agnostic)
@@ -68,19 +70,27 @@ jobs:
         with:
           go-version: '1.22'
 
+      - name: Install UPX (For Compression)
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
       - name: Compile Optimized Binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0 # Ensures purely static binaries
+          CGO_ENABLED: 0
         run: |
           OUTPUT_NAME=gitfleet-${{ matrix.goos }}-${{ matrix.goarch }}
           if [ "${{ matrix.goos }}" = "windows" ]; then
             OUTPUT_NAME=$OUTPUT_NAME.exe
           fi
           
-          # -s -w removes debugging symbols to shrink binary size
+          # Strip debug symbols
           go build -ldflags="-s -w" -o $OUTPUT_NAME .
+          
+          # Compress with UPX (Skip macOS to prevent signing corruption)
+          if [ "${{ matrix.goos }}" != "darwin" ]; then
+            upx --best $OUTPUT_NAME
+          fi
 
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
