@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [ main ]
 
+# Optimization: Cancel in-progress runs for the same ref
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -48,17 +53,14 @@ jobs:
     strategy:
       matrix:
         include:
-          # Linux & Termux Android Environments
           - goos: linux
             goarch: amd64
           - goos: linux
             goarch: arm64
-          # macOS (Apple Silicon + Intel)
           - goos: darwin
             goarch: arm64
           - goos: darwin
             goarch: amd64
-          # Windows
           - goos: windows
             goarch: amd64
     steps:
@@ -70,7 +72,7 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Install UPX (For Compression)
+      - name: Install UPX
         run: sudo apt-get update && sudo apt-get install -y upx-ucl
 
       - name: Compile Optimized Binary
@@ -83,11 +85,7 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             OUTPUT_NAME=$OUTPUT_NAME.exe
           fi
-          
-          # Strip debug symbols
           go build -ldflags="-s -w" -o $OUTPUT_NAME .
-          
-          # Compress with UPX (Skip macOS to prevent signing corruption)
           if [ "${{ matrix.goos }}" != "darwin" ]; then
             upx --best $OUTPUT_NAME
           fi
