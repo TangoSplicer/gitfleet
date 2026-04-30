@@ -1,0 +1,89 @@
+name: GitFleet CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Alignment & Correct Usage Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+
+      - name: Verify Module Dependencies
+        run: go mod verify
+
+      - name: Usage Alignment (Format Check)
+        run: |
+          # Fails if any file is not formatted idiomaticaly
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "Formatting error! Run 'go fmt ./...'"
+            exit 1
+          fi
+
+      - name: Logic Hallucination Check (Go Vet)
+        run: go vet ./...
+
+  release:
+    name: Build & Release (OS-Agnostic)
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Linux & Termux Android Environments
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          # macOS (Apple Silicon + Intel)
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          # Windows
+          - goos: windows
+            goarch: amd64
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Go Environment
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Compile Optimized Binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0 # Ensures purely static binaries
+        run: |
+          OUTPUT_NAME=gitfleet-${{ matrix.goos }}-${{ matrix.goarch }}
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            OUTPUT_NAME=$OUTPUT_NAME.exe
+          fi
+          
+          # -s -w removes debugging symbols to shrink binary size
+          go build -ldflags="-s -w" -o $OUTPUT_NAME .
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gitfleet-*
+          generate_release_notes: true
