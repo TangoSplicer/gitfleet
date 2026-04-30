@@ -38,7 +38,7 @@ type mainModel struct {
 	totalRepos int
 	reposDone  int
 	results    []Result
-	
+
 	// UI Components
 	progress progress.Model
 	logs     []string // Keeps track of the last few processed repos
@@ -93,7 +93,7 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reposDone++
 		res := Result(msg)
 		m.results = append(m.results, res)
-		
+
 		// Add to UI log queue (keep only last 3 for mobile layout)
 		statusTxt := StyleSuccess.Render("OK")
 		if !res.Success {
@@ -144,7 +144,7 @@ func (m mainModel) View() string {
 		for _, l := range m.logs {
 			logText += l + "\n"
 		}
-		
+
 		content := fmt.Sprintf("%s\n\n%s\n\n%s",
 			StyleTitle.Render("🐝 Swarming..."),
 			m.progress.View(),
@@ -156,7 +156,11 @@ func (m mainModel) View() string {
 		successes := 0
 		failures := 0
 		for _, r := range m.results {
-			if r.Success { successes++ } else { failures++ }
+			if r.Success {
+				successes++
+			} else {
+				failures++
+			}
 		}
 
 		content := fmt.Sprintf("%s\n\n%s %d\n%s %d\n%s %d\n\nPress %s to exit.",
@@ -191,7 +195,9 @@ func (m *mainModel) startSwarm(swarmType SwarmType) (tea.Model, tea.Cmd) {
 	scanCmd := func() tea.Msg {
 		repoCount := 0
 		filepath.WalkDir(m.rootPath, func(path string, d fs.DirEntry, err error) error {
-			if err != nil { return nil }
+			if err != nil {
+				return nil
+			}
 
 			if d.IsDir() {
 				for _, ignore := range m.cfg.IgnoreList {
@@ -218,7 +224,9 @@ func (m *mainModel) startSwarm(swarmType SwarmType) (tea.Model, tea.Cmd) {
 func waitForResult(results <-chan Result) tea.Cmd {
 	return func() tea.Msg {
 		res, ok := <-results
-		if !ok { return nil }
+		if !ok {
+			return nil
+		}
 		return ResultMsg(res)
 	}
 }
@@ -235,11 +243,17 @@ func truncatePath(path string, maxLength int) string {
 }
 
 func getOptimalWorkers(configOverride int) int {
-	if configOverride > 0 { return configOverride }
+	if configOverride > 0 {
+		return configOverride
+	}
 	cpus := runtime.NumCPU()
 	workers := cpus * 2
-	if workers < 4 { return 4 }
-	if workers > 32 { return 32 }
+	if workers < 4 {
+		return 4
+	}
+	if workers > 32 {
+		return 32
+	}
 	return workers
 }
 
