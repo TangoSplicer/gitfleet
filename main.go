@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -26,6 +27,9 @@ type ScanCompleteMsg struct {
 	TotalRepos int
 }
 
+// tickMsg is used to animate the progress bar smoothly
+type tickMsg struct{}
+
 type mainModel struct {
 	state      AppState
 	fleet      *Fleet
@@ -34,6 +38,10 @@ type mainModel struct {
 	totalRepos int
 	reposDone  int
 	results    []Result
+	
+	// UI Components
+	progress progress.Model
+	logs     []string // Keeps track of the last few processed repos
 }
 
 func initialModel(cfg Config, targetDir string) mainModel {
@@ -42,6 +50,8 @@ func initialModel(cfg Config, targetDir string) mainModel {
 		cfg:      cfg,
 		rootPath: targetDir,
 		results:  make([]Result, 0),
+		progress: progress.New(progress.WithDefaultGradient()),
+		logs:     make([]string, 0),
 	}
 }
 
@@ -49,6 +59,14 @@ func (m mainModel) Init() tea.Cmd { return nil }
 
 func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		// Responsive design: adjust progress bar width based on terminal size
+		m.progress.Width = msg.Width - 10
+		if m.progress.Width > 60 {
+			m.progress.Width = 60 // Cap width on desktop monitors
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -73,11 +91,34 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ResultMsg:
 		m.reposDone++
-		m.results = append(m.results, Result(msg))
-		if m.reposDone >= m.totalRepos {
-			return m, func() tea.Msg { return SwarmDoneMsg{} }
+		res := Result(msg)
+		m.results = append(m.results, res)
+		
+		// Add to UI log queue (keep only last 3 for mobile layout)
+		statusTxt := StyleSuccess.Render("OK")
+		if !res.Success {
+			statusTxt = StyleError.Render("FAIL")
 		}
-		return m, waitForResult(m.fleet.Results)
+		logLine := fmt.Sprintf("[%s] %s", statusTxt, truncatePath(res.Path, 25))
+		m.logs = append(m.logs, logLine)
+		if len(m.logs) > 3 {
+			m.logs = m.logs[1:] // Pop the oldest log
+		}
+
+		// Calculate progress percentage
+		percent := float64(m.reposDone) / float64(m.totalRepos)
+		cmd := m.progress.SetPercent(percent)
+
+		if m.reposDone >= m.totalRepos {
+			return m, tea.Batch(cmd, func() tea.Msg { return SwarmDoneMsg{} })
+		}
+		return m, tea.Batch(cmd, waitForResult(m.fleet.Results))
+
+	case progress.FrameMsg:
+		// Required for progress bar animation
+		progressModel, cmd := m.progress.Update(msg)
+		m.progress = progressModel.(progress.Model)
+		return m, cmd
 
 	case SwarmDoneMsg:
 		m.state = StateReport
@@ -89,24 +130,49 @@ func (m mainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m mainModel) View() string {
 	switch m.state {
 	case StateDashboard:
-		return fmt.Sprintf("GitFleet Dashboard\nTarget: %s\nWorkers: %d\nPress 'Enter' to start Morning Routine, 'q' to quit.", m.rootPath, m.fleetWorkerCount())
+		content := fmt.Sprintf("%s\n\nTarget Dir: %s\nWorkers:    %d\n\nPress %s to begin Swarm.",
+			StyleTitle.Render("⛵ GitFleet Dashboard"),
+			StyleHighlight.Render(truncatePath(m.rootPath, 30)),
+			m.fleetWorkerCount(),
+			StyleHighlight.Render("'Enter'"),
+		)
+		return StyleMainBox.Render(content)
+
 	case StateSwarming:
-		return fmt.Sprintf("Swarming with %d workers...\nProgress: %d/%d repos processed.", m.fleetWorkerCount(), m.reposDone, m.totalRepos)
+		// Render Logs
+		logText := ""
+		for _, l := range m.logs {
+			logText += l + "\n"
+		}
+		
+		content := fmt.Sprintf("%s\n\n%s\n\n%s",
+			StyleTitle.Render("🐝 Swarming..."),
+			m.progress.View(),
+			StyleLogBox.Render(logText),
+		)
+		return StyleMainBox.Render(content)
+
 	case StateReport:
 		successes := 0
+		failures := 0
 		for _, r := range m.results {
-			if r.Success {
-				successes++
-			}
+			if r.Success { successes++ } else { failures++ }
 		}
-		return fmt.Sprintf("Report for %s:\nTotal: %d | Success: %d | Failed: %d\nPress 'q' to quit.",
-			truncatePath(m.rootPath, 40), m.totalRepos, successes, m.totalRepos-successes)
+
+		content := fmt.Sprintf("%s\n\n%s %d\n%s %d\n%s %d\n\nPress %s to exit.",
+			StyleTitle.Render("📊 Swarm Report"),
+			StyleSubtle.Render("Total scanned:"), m.totalRepos,
+			StyleSuccess.Render("Successful:   "), successes,
+			StyleError.Render("Failed:       "), failures,
+			StyleHighlight.Render("'q'"),
+		)
+		return StyleMainBox.Render(content)
+
 	default:
 		return "Unknown state"
 	}
 }
 
-// Helper to determine active workers for the UI
 func (m *mainModel) fleetWorkerCount() int {
 	if m.fleet != nil {
 		return m.fleet.NumWorkers
@@ -116,12 +182,11 @@ func (m *mainModel) fleetWorkerCount() int {
 
 func (m *mainModel) startSwarm(swarmType SwarmType) (tea.Model, tea.Cmd) {
 	m.state = StateSwarming
-	
-	// Adaptive Worker Allocation
 	workers := getOptimalWorkers(m.cfg.MaxWorkers)
 	m.fleet = NewFleet(workers)
 	m.reposDone = 0
 	m.results = nil
+	m.logs = []string{"Scanner initializing..."}
 
 	scanCmd := func() tea.Msg {
 		repoCount := 0
@@ -162,27 +227,19 @@ func truncatePath(path string, maxLength int) string {
 	if len(path) <= maxLength {
 		return path
 	}
-	parts := strings.Split(path, string(os.PathSeparator))
+	parts := strings.Split(filepath.ToSlash(path), "/")
 	if len(parts) < 3 {
-		return "..." + path[len(path)-maxLength+3:]
+		return ".../" + filepath.Base(path)
 	}
-	return ".../" + filepath.Join(parts[len(parts)-2:]...)
+	return ".../" + strings.Join(parts[len(parts)-2:], "/")
 }
 
-// getOptimalWorkers calculates pool size based on hardware limits
 func getOptimalWorkers(configOverride int) int {
-	if configOverride > 0 {
-		return configOverride // User forced a specific number
-	}
-	
-	// Git ops are I/O bound, not CPU bound. We can safely multiply cores by 2.
+	if configOverride > 0 { return configOverride }
 	cpus := runtime.NumCPU()
 	workers := cpus * 2
-	
-	// Guardrails: Don't choke Termux (min 4), don't spam desktop OS (max 32)
 	if workers < 4 { return 4 }
 	if workers > 32 { return 32 }
-	
 	return workers
 }
 
