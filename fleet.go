@@ -9,7 +9,6 @@ import (
 	"sync"
 )
 
-// SwarmType defines the operation to be executed across the fleet.
 type SwarmType int
 
 const (
@@ -18,13 +17,11 @@ const (
 	SwarmPrune
 )
 
-// Job represents a single git repository operation.
 type Job struct {
 	Path string
 	Type SwarmType
 }
 
-// Result represents the outcome of a Job.
 type Result struct {
 	Path    string
 	Success bool
@@ -32,7 +29,6 @@ type Result struct {
 	Err     error
 }
 
-// Fleet manages the bounded worker pool and channels.
 type Fleet struct {
 	NumWorkers int
 	Jobs       chan Job
@@ -42,38 +38,33 @@ type Fleet struct {
 	cancel     context.CancelFunc
 }
 
-// NewFleet initializes a new concurrent fleet manager.
 func NewFleet(numWorkers int) *Fleet {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Fleet{
 		NumWorkers: numWorkers,
-		Jobs:       make(chan Job, 1000), // Buffered to prevent blocking the scanner
+		Jobs:       make(chan Job, 1000),
 		Results:    make(chan Result, 1000),
 		ctx:        ctx,
 		cancel:     cancel,
 	}
 }
 
-// Start boots up the worker pool.
 func (f *Fleet) Start() {
 	for i := 0; i < f.NumWorkers; i++ {
 		f.wg.Add(1)
 		go f.worker()
 	}
 
-	// Watcher to close the results channel once all jobs are processed
 	go func() {
 		f.wg.Wait()
 		close(f.Results)
 	}()
 }
 
-// Stop gracefully cancels all running workers.
 func (f *Fleet) Stop() {
 	f.cancel()
 }
 
-// worker listens for jobs and executes them until the channel is closed or context cancelled.
 func (f *Fleet) worker() {
 	defer f.wg.Done()
 	for {
@@ -82,27 +73,28 @@ func (f *Fleet) worker() {
 			return
 		case job, ok := <-f.Jobs:
 			if !ok {
-				return // Jobs channel closed, exit worker
+				return
 			}
 			f.Results <- f.execute(job)
 		}
 	}
 }
 
-// execute runs the actual Git commands based on the SwarmType.
 func (f *Fleet) execute(job Job) Result {
 	var cmd *exec.Cmd
+	var customOutput string
 
 	switch job.Type {
 	case SwarmStatus:
-		// Check for uncommitted changes
 		cmd = exec.CommandContext(f.ctx, "git", "status", "--porcelain")
 	case SwarmSync:
-		// Fetch and pull changes
-		cmd = exec.CommandContext(f.ctx, "git", "pull", "--rebase")
+		// --autostash safely protects uncommitted work during the concurrent rebase
+		cmd = exec.CommandContext(f.ctx, "git", "pull", "--rebase", "--autostash")
 	case SwarmPrune:
-		// Fetch and prune dead tracking branches
-		cmd = exec.CommandContext(f.ctx, "git", "fetch", "-p")
+		// 1. Fetch and prune dead tracking branches natively
+		// 2. We use a bash wrap here to dynamically find and delete 'gone' local branches
+		script := `git fetch -p && git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -D`
+		cmd = exec.CommandContext(f.ctx, "sh", "-c", script)
 	default:
 		return Result{Path: job.Path, Success: false, Err: fmt.Errorf("unknown swarm type")}
 	}
@@ -118,17 +110,29 @@ func (f *Fleet) execute(job Job) Result {
 		output = strings.TrimSpace(errBuf.String())
 	}
 
-	// Specialized output formatting for Status
-	if job.Type == SwarmStatus && output != "" {
-		output = "Changes pending"
-	} else if job.Type == SwarmStatus && output == "" {
-		output = "Clean"
+	// Format specific outputs for the UI log
+	if job.Type == SwarmStatus {
+		if output != "" {
+			customOutput = "Changes pending"
+		} else {
+			customOutput = "Clean"
+		}
+	} else if job.Type == SwarmPrune {
+		if output != "" {
+			customOutput = "Branches pruned"
+		} else {
+			customOutput = "Clean"
+		}
+	} else if err == nil {
+		customOutput = "Synced"
+	} else {
+		customOutput = "Failed"
 	}
 
 	return Result{
 		Path:    job.Path,
 		Success: err == nil,
-		Output:  output,
+		Output:  customOutput,
 		Err:     err,
 	}
 }
